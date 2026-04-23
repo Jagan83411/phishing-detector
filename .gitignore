@@ -7,3 +7,13 @@ token.json
 
 *.pkl
 .env
+
+user_tokens/
+credentials.json
+token.json
+venv/
+__pycache__/
+*.pyc
+*.pkl
+*.log
+.env

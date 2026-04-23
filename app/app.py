@@ -2,24 +2,16 @@ import streamlit as st
 import pickle
 import os
 import re
-import numpy as np
-import pandas as pd
 import random
 import time
-import sys   # ✅ IMPORTANT
+import sys
 
 # =====================================================
-# FIX PYTHON PATH (MUST BE FIRST)
+# PATH SETUP
 # =====================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(BASE_DIR))
-cred_path = os.path.join(BASE_DIR, "credentials.json")
 
-#flow = InstalledAppFlow.from_client_secrets_file(cred_path, SCOPES)
-# =====================================================
-# IMPORT MODULES (AFTER PATH FIX)
-# =====================================================
-from threat_db.db import check_url
 from gmail_scanner.gmail_reader import get_service, fetch_emails
 
 # =====================================================
@@ -34,88 +26,56 @@ st.set_page_config(
 # =====================================================
 # LOAD MODEL
 # =====================================================
-vectorizer = pickle.load(open(os.path.join(BASE_DIR, "..", "vectorizer.pkl"), "rb"))
 model = pickle.load(open(os.path.join(BASE_DIR, "..", "model.pkl"), "rb"))
 
 # =====================================================
-# CYBER UI
+# FEATURE ENGINEERING (MATCH DATASET)
 # =====================================================
-st.markdown("""
-<style>
+def extract_features(url):
+    url = str(url)
 
-.stApp {
-    background: linear-gradient(-45deg, #05070f, #0b1220, #0a0f1c, #020617);
-    background-size: 400% 400%;
-    animation: bg 10s ease infinite;
-    color: #e5e7eb;
-    font-family: monospace;
-}
+    features = []
+    features.append(len(url))
+    features.append(url.count("."))
+    features.append(url.count("-"))
+    features.append(url.count("/"))
+    features.append(int("https" in url))
+    features.append(int(bool(re.search(r'\d+\.\d+\.\d+\.\d+', url))))
+    features.append(int("@" in url))
+    features.append(int("//" in url[7:]))
 
-@keyframes bg {
-    0% {background-position: 0% 50%;}
-    50% {background-position: 100% 50%;}
-    100% {background-position: 0% 50%;}
-}
+    domain = url.split("//")[-1].split("/")[0]
+    features.append(len(domain))
+    features.append(url.count(".") - 1)
 
-.title {
-    text-align: center;
-    font-size: 34px;
-    color: #3b82f6;
-    font-weight: bold;
-    text-shadow: 0 0 15px #3b82f6;
-}
+    # ✅ ONLY THIS (NO brands feature)
+    suspicious_words = ["login", "verify", "secure", "update", "account", "bank"]
+    features.append(int(any(w in url.lower() for w in suspicious_words)))
 
-.card {
-    background: rgba(15, 23, 42, 0.7);
-    border: 1px solid rgba(59,130,246,0.3);
-    padding: 20px;
-    border-radius: 15px;
-}
-
-.stButton > button {
-    background: linear-gradient(90deg, #2563eb, #1e40af);
-    color: white;
-    border-radius: 10px;
-    padding: 10px 15px;
-    font-weight: bold;
-}
-
-.terminal {
-    background: black;
-    color: #00ff88;
-    padding: 10px;
-    border-radius: 10px;
-    border: 1px solid #00ff88;
-}
-
-</style>
-""", unsafe_allow_html=True)
+    return features
 
 # =====================================================
-# TITLE
+# RULE-BASED BOOST
 # =====================================================
-st.markdown("<div class='title'>🛡️ BlueSec AI SOC Dashboard</div>", unsafe_allow_html=True)
+def rule_check(text):
+    text = text.lower()
 
-st.write("Real-time phishing detection system (URL + Email + SOC)")
+    if any(w in text for w in ["login", "verify", "update", "password"]):
+        if any(b in text for b in ["amazon", "paypal", "google", "bank"]):
+            return True
+
+    return False
 
 # =====================================================
-# SIDEBAR
+# FINAL PREDICTION
 # =====================================================
-mode = st.sidebar.radio("Select Mode", ["📊 SOC Dashboard", "💻 Hacker Terminal"])
-
-# =====================================================
-# ML + DB LOGIC
-# =====================================================
-def predict_ml(text):
-    X = vectorizer.transform([text])
-    prob = model.predict_proba(X)[0][1]
-    return prob
-
 def final_predict(text):
-    if check_url(text):
-        return "PHISHING (DB MATCH)", 1.0
 
-    prob = predict_ml(text)
+    if rule_check(text):
+        return "PHISHING (RULE)", 0.95
+
+    features = extract_features(text)
+    prob = model.predict_proba([features])[0][1]
 
     if prob > 0.5:
         return "PHISHING (ML)", prob
@@ -125,128 +85,123 @@ def final_predict(text):
 # =====================================================
 # EXPLAINABILITY
 # =====================================================
-suspicious_words = ["urgent","verify","password","login","bank","click","update","security"]
-
 def explain(text):
-    text = text.lower()
-    return [w for w in suspicious_words if w in text]
+    words = ["urgent","verify","password","login","bank","click","update","security"]
+    return [w for w in words if w in text.lower()]
 
 # =====================================================
-# SOC DASHBOARD
+# UI STYLE
 # =====================================================
-if mode == "📊 SOC Dashboard":
+st.markdown("""
+<style>
+.stApp {
+    background: linear-gradient(-45deg, #05070f, #0b1220, #0a0f1c, #020617);
+    color: #e5e7eb;
+    font-family: monospace;
+}
+.title {
+    text-align: center;
+    font-size: 34px;
+    color: #3b82f6;
+    text-shadow: 0 0 10px #3b82f6;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("<div class='title'>🛡️ BlueSec AI SOC Dashboard</div>", unsafe_allow_html=True)
+
+# =====================================================
+# SIDEBAR
+# =====================================================
+mode = st.sidebar.radio("Mode", ["📊 Dashboard", "💻 Terminal"])
+
+# =====================================================
+# DASHBOARD
+# =====================================================
+if mode == "📊 Dashboard":
 
     st.subheader("🔍 Threat Analyzer")
     input_text = st.text_area("Paste URL or Email")
 
-    if st.button("Scan Threat"):
+    if st.button("Scan"):
 
         label, prob = final_predict(input_text)
         reasons = explain(input_text)
-
-        st.markdown("### 🧠 Result")
 
         if "PHISHING" in label:
             st.error(f"🔴 {label}")
         else:
             st.success("🟢 SAFE")
 
-        st.write("Confidence:", round(prob * 100, 2), "%")
+        st.metric("Confidence", f"{round(prob*100,2)}%")
 
-        if reasons:
-            st.warning("⚠ Suspicious keywords: " + ", ".join(reasons))
-
-    # =================================================
-    # GMAIL SCANNER
-    # =================================================
-   # =================================================
-# GMAIL SCANNER
-# =================================================
-st.subheader("📧 Gmail Inbox Scanner")
-
-if st.button("Scan Gmail Inbox"):
-
-    service = get_service()
-    emails = fetch_emails(service)
-
-    st.success(f"Emails fetched: {len(emails)}")
-    st.subheader("📧 SOC Email Threat Panel")
-
-    for e in emails[:5]:
-
-        msg = service.users().messages().get(
-            userId="me",
-            id=e["id"]
-        ).execute()
-
-        snippet = msg.get("snippet", "")
-
-        # 🧠 Prediction
-        label, prob = final_predict(snippet)
-        confidence = round(prob * 100, 2)
-
-        # 🧠 Explainability
-        reasons = explain(snippet)
-
-        # 🔴 / 🟢 Color based on threat
-        if "PHISHING" in label:
-            border = "#ef4444"
-            status = "🔴 HIGH RISK"
-        else:
-            border = "#10b981"
-            status = "🟢 SAFE"
-
-        # 🟦 SOC CARD
-        st.markdown(f"""
-        <div style="
-            background: rgba(15,23,42,0.8);
-            border-left: 5px solid {border};
-            padding: 15px;
-            border-radius: 10px;
-            margin-bottom: 15px;
-            box-shadow: 0 0 10px {border};
-        ">
-            <b>{status}</b><br><br>
-            📩 <b>Email Preview:</b><br>
-            {snippet}<br><br>
-            📊 <b>Confidence:</b> {confidence}%<br>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # 🧠 Indicators
         if reasons:
             st.warning("⚠ Indicators: " + ", ".join(reasons))
+
+    # ===============================
+    # GMAIL SCANNER
+    # ===============================
+    st.subheader("📧 Gmail Scanner")
+
+    if "user_email" not in st.session_state:
+        st.session_state.user_email = None
+
+    if st.button("Login Gmail"):
+        service, user_email = get_service()
+        st.session_state.user_email = user_email
+        st.success(f"Logged in: {user_email}")
+
+    if st.session_state.user_email:
+
+        service, _ = get_service(st.session_state.user_email)
+
+        if st.button("Scan Inbox"):
+
+            emails = fetch_emails(service)
+
+            for e in emails[:5]:
+
+                msg = service.users().messages().get(
+                    userId="me", id=e["id"]
+                ).execute()
+
+                snippet = msg.get("snippet", "")
+
+                label, prob = final_predict(snippet)
+
+                if "PHISHING" in label:
+                    st.error(f"🔴 {label} ({round(prob*100,2)}%)")
+                else:
+                    st.success(f"🟢 SAFE ({round(prob*100,2)}%)")
+
+                st.write(snippet)
+                st.markdown("---")
 
 # =====================================================
 # TERMINAL MODE
 # =====================================================
-elif mode == "💻 Hacker Terminal":
+else:
 
-    st.subheader("💻 SOC Terminal Scanner")
+    st.subheader("💻 SOC Terminal")
 
-    text = st.text_area("Enter Payload")
+    text = st.text_area("Enter payload")
 
-    if st.button("Run Scan"):
+    if st.button("Run"):
 
         terminal = st.empty()
 
-        logs = [
-            "[+] Initializing SOC engine...",
-            "[+] Extracting features...",
-            "[+] Running ML model...",
-            "[+] Checking threat DB...",
+        steps = [
+            "Initializing...",
+            "Extracting features...",
+            "Running model...",
+            "Checking rules..."
         ]
 
-        for log in logs:
-            terminal.markdown(f"<div class='terminal'>{log}</div>", unsafe_allow_html=True)
+        for s in steps:
+            terminal.write(f"[+] {s}")
             time.sleep(0.5)
 
         label, prob = final_predict(text)
 
-        terminal.markdown(f"""
-        <div class='terminal'>
-        [+] RESULT: {label}<br>
-        [+] CONFIDENCE: {round(prob*100,2)}%<br>
-        [+] SESSION CLOSED
-        </div>
-        """, unsafe_allow_html=True)
+        terminal.write(f"[+] RESULT: {label}")
+        terminal.write(f"[+] CONFIDENCE: {round(prob*100,2)}%")
